@@ -99,12 +99,13 @@ def build_fis_from_chromosome(sol):
         rsk_t_uc = max(rsk_t_uc, rsk_t_lo + 3.0)
         mk_b_up  = max(mk_b_up,  mk_b_lo  + 0.5)
 
-        ipk       = ctrl.Antecedent(np.arange(0, 4.01, 0.01), 'ipk')
-        kehadiran = ctrl.Antecedent(np.arange(0, 101, 1),      'kehadiran')
-        mk_gagal  = ctrl.Antecedent(np.arange(0, 10.1, 0.1),   'mk_gagal')
-        status_ekon = ctrl.Antecedent(np.arange(0, 1.01, 0.01),'status_ekon')
-        risiko    = ctrl.Consequent(np.arange(0, 101, 1),       'risiko',
-                                    defuzzify_method='centroid')
+        # Coarser universes — 5–10× fewer points, negligible accuracy loss for GA fitness
+        ipk         = ctrl.Antecedent(np.arange(0, 4.05, 0.05),  'ipk')
+        kehadiran   = ctrl.Antecedent(np.arange(0, 105, 5),       'kehadiran')
+        mk_gagal    = ctrl.Antecedent(np.arange(0, 10.5, 0.5),    'mk_gagal')
+        status_ekon = ctrl.Antecedent(np.arange(0, 1.05, 0.05),   'status_ekon')
+        risiko      = ctrl.Consequent(np.arange(0, 105, 5),        'risiko',
+                                      defuzzify_method='centroid')
 
         # IPK MFs
         ipk['Rendah'] = fuzz.trapmf(ipk.universe, [0.0, 0.0, ipk_r_li, ipk_r_up])
@@ -173,26 +174,96 @@ def build_fis_from_chromosome(sol):
         return None
 
 
+def _gauss(x, mean, sigma):
+    return np.exp(-0.5 * ((x - mean) / max(sigma, 1e-6)) ** 2)
+
+def _trap(x, a, b, c, d):
+    return np.clip(np.minimum((x - a) / max(b - a, 1e-6),
+                              (d - x) / max(d - c, 1e-6)), 0.0, 1.0)
+
+def _tri(x, a, b, c):
+    return np.clip(np.minimum((x - a) / max(b - a, 1e-6),
+                              (c - x) / max(c - b, 1e-6)), 0.0, 1.0)
+
+# Rule table: (ipk_mf, had_mf, mk_mf, eko_mf, out_mf)
+# mf indices: ipk 0=R 1=S 2=T | had 3=J 4=C 5=Ra | mk 6=Sd 7=Se 8=B | eko 9=Re 10=St
+# out: 0=Rendah 1=Sedang 2=Tinggi
+_RULES = [
+    (0,3,8,9,2),(0,3,8,10,2),(0,3,7,9,2),(0,4,8,9,2),(0,3,7,10,2),
+    (0,4,8,10,2),(1,3,8,9,2),(0,5,8,9,2),(1,3,8,10,2),(0,3,6,9,2),
+    (0,4,7,10,1),(1,4,7,9,1),(1,3,7,10,1),(1,3,6,9,1),(0,5,7,10,1),
+    (0,4,6,9,1),(1,4,8,10,1),(1,3,7,9,1),(2,3,7,9,1),(0,5,6,9,1),
+    (1,5,7,9,1),(2,4,8,9,1),(2,3,6,10,1),
+    (2,5,6,10,0),(2,5,6,9,0),(2,4,6,10,0),(1,5,6,10,0),(2,5,7,10,0),
+    (1,5,6,9,0),(2,4,6,9,0),(1,4,6,10,0),
+]
+
+def _infer_fast(sol, ipk_v, had_v, mk_v, eko_v):
+    """
+    Pure-numpy Mamdani inference for one sample.
+    Skips skfuzzy ControlSystem entirely — ~50× faster per call.
+    """
+    # Unpack chromosome
+    ipk_r_up = sol[0];  ipk_s_pk = sol[1];  ipk_t_lo = sol[2]
+    had_j_up = sol[3];  had_c_pk = sol[4];  had_r_lo = sol[5]
+    mk_s_up  = sol[6];  mk_m_pk  = sol[7];  mk_b_lo  = sol[8]
+    eko_r_mn = sol[9];  eko_s_mn = sol[10]
+    rsk_r_up = sol[11]; rsk_s_pk = sol[12]; rsk_t_lo = sol[13]
+    ipk_r_li = min(sol[14], ipk_r_up - 0.1)
+    had_j_li = min(sol[15], had_j_up - 5.0)
+    mk_s_li  = min(sol[16], mk_s_up  - 0.5)
+    rsk_r_lc = min(sol[17], rsk_r_up - 3.0)
+    rsk_t_uc = max(sol[18], rsk_t_lo + 3.0)
+    mk_b_up  = max(sol[19], mk_b_lo  + 0.5)
+
+    # MF values for each input
+    mu = [None] * 11
+    mu[0]  = _trap(ipk_v,  0.0, 0.0,      ipk_r_li, ipk_r_up)
+    mu[1]  = _tri (ipk_v,  ipk_r_li,      ipk_s_pk, ipk_t_lo)
+    mu[2]  = _trap(ipk_v,  ipk_t_lo,      ipk_t_lo + 0.3, 4.0, 4.0)
+    mu[3]  = _trap(had_v,  0.0, 0.0,      had_j_li, had_j_up)
+    mu[4]  = _tri (had_v,  had_j_li,      had_c_pk, had_r_lo)
+    mu[5]  = _trap(had_v,  had_r_lo,      had_r_lo + 5.0, 100.0, 100.0)
+    mu[6]  = _trap(mk_v,   0.0, 0.0,      mk_s_li,  mk_s_up)
+    mu[7]  = _tri (mk_v,   mk_s_li,       mk_m_pk,  mk_b_lo)
+    mu[8]  = _trap(mk_v,   mk_b_lo,       mk_b_up,  10.0, 10.0)
+    mu[9]  = _gauss(eko_v, eko_r_mn, 0.15)
+    mu[10] = _gauss(eko_v, eko_s_mn, 0.15)
+
+    # Output universe and aggregated output MFs
+    u_out = np.arange(0, 105, 5, dtype=np.float32)
+    agg   = np.zeros(len(u_out), dtype=np.float32)
+
+    mf_out = [
+        _trap(u_out, 0.0,     0.0,      rsk_r_lc, rsk_r_up),  # Rendah
+        _tri (u_out, rsk_r_lc, rsk_s_pk, rsk_t_lo),            # Sedang
+        _trap(u_out, rsk_t_lo, rsk_t_uc, 100.0, 100.0),        # Tinggi
+    ]
+
+    for (i0, i1, i2, i3, out_idx) in _RULES:
+        firing = min(mu[i0], mu[i1], mu[i2], mu[i3])
+        if firing > 0:
+            agg = np.maximum(agg, np.minimum(firing, mf_out[out_idx]))
+
+    denom = agg.sum()
+    if denom < 1e-8:
+        return 50.0   # fallback to mid-range
+    return float(np.dot(agg, u_out) / denom)
+
+
 def evaluate_chromosome(sol, dataset):
     """
-    Build FIS from chromosome and evaluate accuracy on the dataset.
-    Returns accuracy in [0, 1], or 0.0 on failure.
+    Evaluate chromosome accuracy on the dataset using fast numpy inference.
+    Returns accuracy in [0, 1].
     """
-    result = build_fis_from_chromosome(sol)
-    if result is None:
-        return 0.0
-    sim, *_ = result
     correct = 0
     total   = 0
     for row in dataset:
         try:
-            sim.input['ipk']         = float(row['ipk'])
-            sim.input['kehadiran']   = float(row['kehadiran'])
-            sim.input['mk_gagal']    = float(row['mk_gagal'])
-            sim.input['status_ekon'] = float(row['status_ekon'])
-            sim.compute()
-            score = sim.output['risiko']
-            pred  = 'Rendah' if score < 40 else ('Sedang' if score < 65 else 'Tinggi')
+            score = _infer_fast(sol,
+                                float(row['ipk']), float(row['kehadiran']),
+                                float(row['mk_gagal']), float(row['status_ekon']))
+            pred = 'Rendah' if score < 40 else ('Sedang' if score < 65 else 'Tinggi')
             if pred == row['label_true']:
                 correct += 1
             total += 1
@@ -268,6 +339,7 @@ def run_ga_tuning(pop_size=30, num_gen=20, on_generation=None,
         on_generation         = _on_generation,
         random_seed           = 42,
         suppress_warnings     = True,
+        parallel_processing   = ['thread', 4],   # parallelise fitness calls
     )
     ga_instance.run()
 

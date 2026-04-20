@@ -16,9 +16,10 @@ warnings.filterwarnings('ignore')
 # ── Backend imports ──────────────────────────────────────────
 from fis_manual import (build_fis, build_rules, predict,
                          load_uci_dataset, evaluate)
-from fis_ann    import (NeuroFuzzyNet, prepare_dataset,
-                         train_ann, predict_ann, evaluate_ann,
-                         get_rule_weights)
+from fis_ann    import (ANFISNet, train_anfis,
+                         predict_anfis, evaluate_anfis,
+                         get_rule_weights, get_mf_shift_report,
+                         get_gaussian_mf)
 from fis_ga     import (run_ga_tuning, build_fis_from_chromosome,
                          get_ga_mf_params)
 import skfuzzy as fuzz
@@ -72,6 +73,8 @@ sim_manual, ipk_var, kehadiran_var, mk_gagal_var, status_ekon_var, risiko_var = 
 if 'ann_model'       not in st.session_state: st.session_state['ann_model']       = None
 if 'ann_loss'        not in st.session_state: st.session_state['ann_loss']        = None
 if 'ann_acc'         not in st.session_state: st.session_state['ann_acc']         = None
+if 'ann_mf_before'   not in st.session_state: st.session_state['ann_mf_before']   = None
+if 'ann_mf_after'    not in st.session_state: st.session_state['ann_mf_after']    = None
 if 'ga_best_sol'     not in st.session_state: st.session_state['ga_best_sol']     = None
 if 'ga_best_fit'     not in st.session_state: st.session_state['ga_best_fit']     = None
 if 'ga_fit_history'  not in st.session_state: st.session_state['ga_fit_history']  = None
@@ -176,7 +179,7 @@ with tab1:
         score_a, label_a = None, None
         if st.session_state['ann_model'] is not None:
             try:
-                score_a, label_a = predict_ann(
+                score_a, label_a = predict_anfis(
                     st.session_state['ann_model'],
                     ipk_val, had_val, mkf_val, eko_val
                 )
@@ -209,7 +212,7 @@ with tab1:
                 st.info("Jalankan GA Tuning di Tab 5 terlebih dahulu.")
 
         with col_a_disp:
-            st.markdown("#### 🟣 Neuro-Fuzzy ANN")
+            st.markdown("#### 🟣 Neuro-Fuzzy ANFIS")
             if score_a is not None:
                 st.metric("Skor",     f"{score_a:.1f} / 100")
                 st.metric("Kategori", f"{ICON[label_a]} {label_a}")
@@ -218,7 +221,7 @@ with tab1:
                 delta = score_a - score_m if score_m is not None else 0
                 st.caption(f"Δ vs Manual: {delta:+.1f} poin")
             else:
-                st.info("Latih ANN di Tab 4 terlebih dahulu.")
+                st.info("Latih ANFIS di Tab 4 terlebih dahulu.")
 
 
 # ════════════════════════════════════════════════════════════
@@ -307,7 +310,7 @@ with tab3:
         res_a = None
         if st.session_state['ann_model'] is not None:
             with st.spinner("Evaluasi ANN…"):
-                res_a = evaluate_ann(st.session_state['ann_model'], dataset)
+                res_a = evaluate_anfis(st.session_state['ann_model'], dataset)
 
         # ── Accuracy summary row ─────────────────────────────
         st.markdown("### Akurasi Keseluruhan")
@@ -325,7 +328,7 @@ with tab3:
             idx += 1
         if res_a:
             delta_a = round(res_a['accuracy'] - res_m['accuracy'], 2)
-            acc_cols[idx].metric("🟣 Neuro-Fuzzy ANN",
+            acc_cols[idx].metric("🟣 Neuro-Fuzzy ANFIS",
                                  f"{res_a['accuracy']}%",
                                  delta=f"{delta_a:+.2f}%")
 
@@ -342,7 +345,7 @@ with tab3:
         if res_g:
             _draw_cm(axes3[ci], res_g['confusion'], "GA-Tuned FIS"); ci += 1
         if res_a:
-            _draw_cm(axes3[ci], res_a['confusion'], "Neuro-Fuzzy ANN")
+            _draw_cm(axes3[ci], res_a['confusion'], "Neuro-Fuzzy ANFIS")
         plt.tight_layout()
         st.pyplot(fig3)
         plt.close(fig3)
@@ -379,7 +382,7 @@ with tab3:
         if res_g:
             _draw_per_class(axes3b[ci], res_g, "GA-Tuned FIS", "🟡"); ci += 1
         if res_a:
-            _draw_per_class(axes3b[ci], res_a, "Neuro-Fuzzy ANN", "🟣")
+            _draw_per_class(axes3b[ci], res_a, "Neuro-Fuzzy ANFIS", "🟣")
         plt.tight_layout()
         st.pyplot(fig3b)
         plt.close(fig3b)
@@ -389,24 +392,26 @@ with tab3:
 #  TAB 4 — TAHAP 2: NEURO-FUZZY ANN
 # ════════════════════════════════════════════════════════════
 with tab4:
-    st.subheader("🧠 Neuro-Fuzzy (ANN) — Tuning Rule Base via Backpropagation")
+    st.subheader("🧠 Neuro-Fuzzy (ANFIS) — Tuning MF via Backpropagation (Jang 1993)")
 
     with st.expander("📖 Cara Kerja", expanded=False):
         st.markdown(
             """
-            **Bagaimana ANN 'men-tune' FIS?**
+            **Bagaimana ANFIS 'men-tune' FIS?**
 
-            1. **Target belajar** — ANN dilatih untuk mereproduksi *skor output* dari Manual FIS
-               pada dataset UCI #697 (stratified sample; regression, bukan klasifikasi).
-            2. **Arsitektur merefleksikan FIS** —
-               - *Layer 1 (12 nodes)* mewakili fungsi keanggotaan (3 MF × 4 variabel input).
-               - *Layer 2 (30 nodes)* mewakili 30 rule yang sama persis dengan Manual FIS.
-               - *Layer 3 (1 node)* adalah skor risiko akhir (0–100).
-            3. **Tuning rule** — Setelah training, **bobot Layer 2** mencerminkan seberapa
-               penting setiap rule. Rule dengan bobot tinggi lebih berpengaruh terhadap output
-               daripada yang tertulis secara manual — inilah "tuning" yang dilakukan ANN.
-            4. **Output** — Model yang terlatih digunakan langsung untuk prediksi baru,
-               menggantikan inferensi skfuzzy dengan forward-pass neural network.
+            1. **Target belajar** — ANFIS dilatih untuk mereproduksi *skor output* dari Manual FIS
+               pada dataset UCI #697 (stratified sample; regression Sugeno order-0).
+            2. **Arsitektur 5-layer ANFIS (Jang 1993)** —
+               - *Layer 1 (Fuzzifikasi)* — 11 Gaussian MF dengan center **c** dan lebar **σ** yang
+                 **dapat dilatih** via backpropagation.
+               - *Layer 2 (Firing Strength)* — produk fuzzy-AND untuk setiap kombinasi rule (30 rules).
+               - *Layer 3 (Normalisasi)* — firing strength ternormalisasi.
+               - *Layer 4 (Konsekuen)* — satu konstanta Sugeno per rule, **dapat dilatih**.
+               - *Layer 5 (Defuzzifikasi)* — weighted sum → skor risiko 0–100.
+            3. **Tuning parameter** — Setelah training, **c dan σ setiap MF** bergeser dari nilai manual
+               awal. Pergeseran ini merepresentasikan adaptasi kurva keanggotaan yang optimal terhadap data.
+            4. **Bobot konsekuen** — Nilai konstanta per rule menunjukkan kontribusi relatif rule terhadap
+               output akhir — pengganti centroid Mamdani yang tidak diferensiabel.
             """
         )
 
@@ -424,17 +429,16 @@ with tab4:
 
         st.markdown("#### Arsitektur")
         st.code(
-            "Input (4)  →  [Fuzzifikasi]\n"
-            "           →  Linear(4→12) + Sigmoid\n"
-            "           →  [Rule Base]\n"
-            "           →  Linear(12→30) + ReLU\n"
-            "           →  [Defuzzifikasi]\n"
-            "           →  Linear(30→1) + Sigmoid×100\n"
-            "Output: Skor Risiko [0–100]",
+            "Input (4 vars, raw values)\n"
+            "  Layer 1 — Fuzzification   : Gaussian MF (11 nodes, c & σ trainable)\n"
+            "  Layer 2 — Firing Strength : Product T-norm per rule (30 rules)\n"
+            "  Layer 3 — Normalisation   : Normalised firing strengths\n"
+            "  Layer 4 — Consequents     : Sugeno order-0 constants (trainable)\n"
+            "  Layer 5 — Defuzzification : Weighted sum → skor risiko [0–100]",
             language="text",
         )
 
-        run_ann = st.button("🔥 Latih ANN Sekarang", type="primary",
+        run_ann = st.button("🔥 Latih ANFIS Sekarang", type="primary",
                             use_container_width=True)
 
     with col_a2:
@@ -451,8 +455,8 @@ with tab4:
                 prog_bar.progress(epoch / total)
                 stat_txt.text(f"Epoch {epoch}/{total}  —  MSE Loss: {loss:.4f}")
 
-            with st.spinner("Training Neuro-Fuzzy ANN…"):
-                model_trained, loss_hist, acc_hist = train_ann(
+            with st.spinner("Training Neuro-Fuzzy ANFIS…"):
+                model_trained, loss_hist, acc_hist, mf_before, mf_after = train_anfis(
                     sim_manual, dataset,
                     epochs=ann_epochs,
                     lr=ann_lr,
@@ -460,9 +464,11 @@ with tab4:
                     progress_callback=_ann_cb,
                 )
 
-            st.session_state['ann_model'] = model_trained
-            st.session_state['ann_loss']  = loss_hist
-            st.session_state['ann_acc']   = acc_hist
+            st.session_state['ann_model']     = model_trained
+            st.session_state['ann_loss']      = loss_hist
+            st.session_state['ann_acc']       = acc_hist
+            st.session_state['ann_mf_before'] = mf_before
+            st.session_state['ann_mf_after']  = mf_after
             prog_bar.progress(1.0)
             stat_txt.text(f"Training selesai! MSE akhir: {loss_hist[-1]:.4f}")
             st.success(f"✅ Training selesai — {ann_epochs} epochs | "
@@ -476,7 +482,7 @@ with tab4:
             epochs_run = len(loss_h)
 
             fig4, (ax4a, ax4b) = plt.subplots(1, 2, figsize=(11, 4))
-            fig4.suptitle("Kurva Training Neuro-Fuzzy ANN", fontsize=11, fontweight='bold')
+            fig4.suptitle("Kurva Training Neuro-Fuzzy ANFIS", fontsize=11, fontweight='bold')
 
             # Loss curve
             ax4a.plot(range(1, epochs_run + 1), loss_h,
@@ -499,12 +505,29 @@ with tab4:
             st.pyplot(fig4)
             plt.close(fig4)
 
+            # ── MF shift table ───────────────────────────────
+            if st.session_state['ann_mf_before'] is not None:
+                st.markdown("#### Pergeseran Parameter MF — Sebelum vs Sesudah Training")
+                st.caption(
+                    "Nilai **c** (center) dan **σ** (lebar) Gaussian MF yang berubah "
+                    "akibat backpropagation — ini adalah bukti 'tuning' parameter MF oleh ANFIS."
+                )
+                import pandas as pd
+                shift_rows = get_mf_shift_report(
+                    st.session_state['ann_mf_before'],
+                    st.session_state['ann_mf_after'],
+                )
+                st.dataframe(
+                    pd.DataFrame(shift_rows).set_index("Variabel"),
+                    use_container_width=True,
+                )
+
             # ── Rule importance bar chart ────────────────────
-            st.markdown("#### Kepentingan Relatif Setiap Rule (Bobot Layer 2)")
+            st.markdown("#### Kepentingan Relatif Setiap Rule (Konsekuen Sugeno)")
             st.caption(
-                "Tinggi rendahnya bar merepresentasikan seberapa besar kontribusi "
-                "setiap rule terhadap output akhir setelah training. "
-                "Ini adalah bentuk 'tuning' yang dilakukan ANN terhadap rule base manual."
+                "Tinggi rendahnya bar merepresentasikan nilai konstanta konsekuen Sugeno "
+                "setiap rule setelah training — rule dengan nilai lebih tinggi mendorong "
+                "skor risiko lebih besar. Ini adalah bentuk 'tuning' ANFIS terhadap rule base manual."
             )
             rule_w = get_rule_weights(st.session_state['ann_model'])
             rule_labels = [f"R{i+1}" for i in range(30)]
@@ -552,7 +575,7 @@ with tab4:
                     st.markdown(f"- {rule_names[i]} — bobot `{rule_w[i]:.3f}`")
 
         else:
-            st.info("Klik **Latih ANN Sekarang** untuk memulai training.")
+            st.info("Klik **Latih ANFIS Sekarang** untuk memulai training.")
 
 
 # ════════════════════════════════════════════════════════════
@@ -891,7 +914,7 @@ with tab6:
     st.subheader("🔬 Perbandingan Membership Functions — Manual vs GA vs ANN")
     st.caption(
         "Grafik ini menempatkan MF dari ketiga metode pada sumbu yang sama sehingga "
-        "pergeseran titik koordinat akibat tuning GA dan efek bobot ANN dapat dilihat langsung."
+        "pergeseran titik koordinat akibat tuning GA dan pergeseran kurva Gaussian ANFIS dapat dilihat langsung."
     )
 
     # Check availability
@@ -900,7 +923,7 @@ with tab6:
 
     if not ga_ready and not ann_ready:
         st.warning(
-            "Latih **ANN** (Tab 4) dan/atau jalankan **GA** (Tab 5) terlebih dahulu "
+            "Latih **ANFIS** (Tab 4) dan/atau jalankan **GA** (Tab 5) terlebih dahulu "
             "agar perbandingan MF dapat ditampilkan."
         )
     else:
@@ -910,28 +933,23 @@ with tab6:
                 st.session_state['ga_fis_vars']
             )
 
-        # ── ANN-implied MF shift ─────────────────────────────
-        # The ANN doesn't have explicit MF curves, but we can derive an
-        # "effective sensitivity" per input by looking at mf_layer weights.
-        # We visualise this as a soft overlay (Gaussian centred on each MF peak,
-        # scaled by the ANN's mean absolute weight for that MF node).
+        # ── ANFIS learned MF curves ──────────────────────────
+        # Extract learned c (centers) and σ (sigmas) from the trained ANFISNet.
+        # We overlay the ANFIS Gaussian MFs on top of the Manual trapezoid MFs.
+        # MF node layout: IPK(0-2), Kehadiran(3-5), MK_Gagal(6-8), StatusEkon(9-10)
         if ann_ready:
             import torch
             model_ann = st.session_state['ann_model']
+            model_ann.eval()
             with torch.no_grad():
-                mf_w = model_ann.mf_layer.weight.abs().mean(dim=0).numpy()  # (12,)
-            # mf_w[0:3]  → IPK MFs  (Rendah, Sedang, Tinggi)
-            # mf_w[3:6]  → Kehadiran (Jarang, Cukup, Rajin)
-            # mf_w[6:9]  → MK_Gagal  (Sedikit, Sedang, Banyak)
-            # mf_w[9:12] → StatusEkon (Rentan, Stabil — only 2 but padded to 3)
-            if mf_w.max() > 0:
-                mf_w = mf_w / mf_w.max()
+                anfis_c = model_ann.c.detach().numpy().copy()           # (11,)
+                anfis_s = torch.exp(model_ann.log_s).detach().numpy().copy()  # (11,)
 
         # ── Subplot grid: 5 variables ─────────────────────────
         fig6, axes6 = plt.subplots(2, 3, figsize=(16, 9))
         fig6.suptitle(
             "Perbandingan Membership Functions\n"
-            "Biru = Manual  |  Kuning = GA-Tuned  |  Ungu = ANN-weighted overlay",
+            "Biru = Manual  |  Kuning = GA-Tuned  |  Ungu = ANFIS Learned MF",
             fontsize=11, fontweight='bold', y=1.01
         )
         axes6_flat = axes6.flatten()
@@ -979,23 +997,22 @@ with tab6:
                     ax.fill_between(var_g.universe, mf_g,
                                     alpha=0.07, color=C['ga'])
 
-            # ── ANN sensitivity overlay (violet shaded Gaussians) ──
+            # ── ANFIS Learned MF overlay (violet Gaussians) ──
             if ann_ready:
                 node_start, node_end = mf_node_ranges[idx]
                 uni = var_m.universe
                 for ni, term in enumerate(terms):
-                    if node_start + ni >= len(mf_w):
+                    ni_global = node_start + ni
+                    if ni_global >= len(anfis_c):
                         break
-                    w      = mf_w[node_start + ni]
-                    mf_ref = var_m[term].mf
-                    peak   = float(uni[np.argmax(mf_ref)])
-                    spread = (uni[-1] - uni[0]) * 0.12
-                    gauss  = w * np.exp(-0.5 * ((uni - peak) / spread) ** 2)
+                    c_val = anfis_c[ni_global]
+                    s_val = max(float(anfis_s[ni_global]), 1e-3)
+                    gauss = get_gaussian_mf(uni, c_val, s_val)
                     ax.fill_between(uni, gauss,
-                                    alpha=0.20, color=C['ann'])
+                                    alpha=0.22, color=C['ann'])
                     ax.plot(uni, gauss,
-                            color=C['ann'], linewidth=1.2, linestyle=':',
-                            label="ANN weight" if ni == 0 else "_")
+                            color=C['ann'], linewidth=1.4, linestyle=':',
+                            label="ANFIS learned MF" if ni == 0 else "_")
 
             ax.set_title(title, fontsize=10, fontweight='bold')
             ax.set_xlabel(xlabel, fontsize=8)
@@ -1031,7 +1048,7 @@ with tab6:
             legend_items.append(
                 plt.matplotlib.patches.Patch(
                     facecolor=C['ann'], alpha=0.35,
-                    label="ANN Sensitivity Overlay"
+                    label="ANFIS Learned MF"
                 )
             )
         ax_leg.legend(handles=legend_items, loc='center', fontsize=9,
