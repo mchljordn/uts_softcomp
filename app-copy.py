@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore')
 
 # ── Backend imports ──────────────────────────────────────────
 from fis_manual import (build_fis, build_rules, predict,
-                         load_uci_sample, evaluate)
+                         load_uci_dataset, evaluate)
 from fis_ann    import (NeuroFuzzyNet, prepare_dataset,
                          train_ann, predict_ann, evaluate_ann,
                          get_rule_weights)
@@ -23,6 +23,10 @@ from fis_ga     import (run_ga_tuning, build_fis_from_chromosome,
                          get_ga_mf_params)
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
+
+# Shared dataset configuration (aligned with fis_manual.py)
+DATASET_SAMPLE_N = 200
+DATASET_RANDOM_STATE = 42
 
 # ════════════════════════════════════════════════════════════
 #  PAGE CONFIG
@@ -257,7 +261,7 @@ with tab2:
         "AND op     : Minimum\n"
         "OR op      : Maximum\n"
         "Defuzz     : Centroid\n"
-        "Total Rules: 30",
+        "Total Rules: 31",
         ha='center', va='center', fontsize=11,
         bbox=dict(boxstyle='round,pad=0.6', facecolor='#f0f4ff',
                   edgecolor='#aabbdd', linewidth=1.2),
@@ -272,14 +276,18 @@ with tab2:
 #  TAB 3 — EVALUASI & PERBANDINGAN BATCH
 # ════════════════════════════════════════════════════════════
 with tab3:
-    st.subheader("Evaluasi Batch — Perbandingan Ketiga Metode (n=120)")
+    st.subheader("Evaluasi Batch — Perbandingan Ketiga Metode (UCI #697)")
     st.caption(
-        "Klik tombol di bawah untuk menjalankan evaluasi pada 120 sampel UCI. "
+        f"Klik tombol di bawah untuk menjalankan evaluasi pada dataset UCI #697 "
+        f"(stratified sample: {DATASET_SAMPLE_N} per kelas). "
         "GA dan ANN hanya ditampilkan jika sudah dilatih di Tab 4 / Tab 5."
     )
 
     if st.button("▶ Jalankan Evaluasi Batch", type="primary"):
-        dataset      = load_uci_sample()
+        dataset      = load_uci_dataset(
+            sample_n=DATASET_SAMPLE_N,
+            random_state=DATASET_RANDOM_STATE
+        )
         label_order  = ['Rendah', 'Sedang', 'Tinggi']
 
         # ── Manual ──────────────────────────────────────────
@@ -307,7 +315,7 @@ with tab3:
         acc_cols = st.columns(n_cols)
         acc_cols[0].metric("🔵 Manual FIS",
                            f"{res_m['accuracy']}%",
-                           help=f"{res_m['correct']}/{res_m['n']} benar")
+                           help=f"Valid: {res_m['n']} | Skipped: {res_m['skipped']}")
         idx = 1
         if res_g:
             delta_g = round(res_g['accuracy'] - res_m['accuracy'], 2)
@@ -389,7 +397,7 @@ with tab4:
             **Bagaimana ANN 'men-tune' FIS?**
 
             1. **Target belajar** — ANN dilatih untuk mereproduksi *skor output* dari Manual FIS
-               pada 120 sampel dataset (regression, bukan klasifikasi).
+               pada dataset UCI #697 (stratified sample; regression, bukan klasifikasi).
             2. **Arsitektur merefleksikan FIS** —
                - *Layer 1 (12 nodes)* mewakili fungsi keanggotaan (3 MF × 4 variabel input).
                - *Layer 2 (30 nodes)* mewakili 30 rule yang sama persis dengan Manual FIS.
@@ -431,7 +439,10 @@ with tab4:
 
     with col_a2:
         if run_ann:
-            dataset  = load_uci_sample()
+            dataset  = load_uci_dataset(
+                sample_n=DATASET_SAMPLE_N,
+                random_state=DATASET_RANDOM_STATE
+            )
             prog_bar = st.progress(0)
             stat_txt = st.empty()
 
@@ -559,7 +570,8 @@ with tab5:
                batas/puncak dari seluruh MF pada 5 variabel FIS (IPK, Kehadiran, MK Gagal,
                Status Ekonomi, dan Risiko output).
             2. **Fungsi Fitness** — Setiap kromosom di-*decode* menjadi FIS skfuzzy lengkap,
-               lalu dievaluasi akurasinya pada 120 sampel dataset. Fitness = akurasi klasifikasi.
+               lalu dievaluasi akurasinya pada dataset UCI #697 (stratified sample).
+               Fitness = akurasi klasifikasi.
             3. **Seleksi & Evolusi** — GA memilih kromosom terbaik, melakukan crossover dan
                mutasi, menghasilkan generasi baru yang (rata-rata) lebih baik.
             4. **Output** — Kromosom terbaik digunakan untuk membangun FIS GA-Tuned yang
@@ -616,6 +628,8 @@ with tab5:
                     pop_size=ga_pop,
                     num_gen=ga_gen,
                     on_generation=_ga_cb,
+                    dataset_sample_n=DATASET_SAMPLE_N,
+                    dataset_random_state=DATASET_RANDOM_STATE,
                 )
 
             st.session_state['ga_best_sol']    = best_sol
