@@ -31,7 +31,7 @@ import numpy as np
 import pygad
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
-from fis_manual import load_uci_sample
+from fis_manual import load_uci_dataset
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -154,6 +154,7 @@ def build_fis_from_chromosome(sol):
             ctrl.Rule(ipk['Rendah']  & kehadiran['Rajin']  & mk_gagal['Sedikit'] & status_ekon['Rentan'], risiko['Sedang']),
             ctrl.Rule(ipk['Sedang']  & kehadiran['Rajin']  & mk_gagal['Sedang']  & status_ekon['Rentan'], risiko['Sedang']),
             ctrl.Rule(ipk['Tinggi']  & kehadiran['Cukup']  & mk_gagal['Banyak']  & status_ekon['Rentan'], risiko['Sedang']),
+            ctrl.Rule(ipk['Tinggi']  & kehadiran['Jarang'] & mk_gagal['Sedikit'] & status_ekon['Stabil'], risiko['Sedang']),
             ctrl.Rule(ipk['Tinggi']  & kehadiran['Rajin']  & mk_gagal['Sedikit'] & status_ekon['Stabil'], risiko['Rendah']),
             ctrl.Rule(ipk['Tinggi']  & kehadiran['Rajin']  & mk_gagal['Sedikit'] & status_ekon['Rentan'], risiko['Rendah']),
             ctrl.Rule(ipk['Tinggi']  & kehadiran['Cukup']  & mk_gagal['Sedikit'] & status_ekon['Stabil'], risiko['Rendah']),
@@ -202,20 +203,26 @@ def evaluate_chromosome(sol, dataset):
 
 # Module-level dataset cache so fitness_func can access it without re-generating
 _DATASET = None
+_DATASET_SAMPLE_N = 200
+_DATASET_RANDOM_STATE = 42
 
 
 def fitness_func(ga_instance, solution, solution_idx):
     """
-    Fitness = classification accuracy on the UCI sample dataset.
+    Fitness = classification accuracy on the UCI dataset.
     Higher accuracy → higher fitness.
     """
-    global _DATASET
+    global _DATASET, _DATASET_SAMPLE_N, _DATASET_RANDOM_STATE
     if _DATASET is None:
-        _DATASET = load_uci_sample()
+        _DATASET = load_uci_dataset(
+            sample_n=_DATASET_SAMPLE_N,
+            random_state=_DATASET_RANDOM_STATE
+        )
     return evaluate_chromosome(solution, _DATASET)
 
 
-def run_ga_tuning(pop_size=30, num_gen=20, on_generation=None):
+def run_ga_tuning(pop_size=30, num_gen=20, on_generation=None,
+                  dataset_sample_n=200, dataset_random_state=42):
     """
     Run GA optimisation.
     Returns:
@@ -224,8 +231,13 @@ def run_ga_tuning(pop_size=30, num_gen=20, on_generation=None):
         fitness_history: list of best-fitness per generation
         pop_history    : list of (population_array, fitness_array) per generation
     """
-    global _DATASET
-    _DATASET = load_uci_sample()  # fresh load with fixed seed
+    global _DATASET, _DATASET_SAMPLE_N, _DATASET_RANDOM_STATE
+    _DATASET_SAMPLE_N = dataset_sample_n
+    _DATASET_RANDOM_STATE = dataset_random_state
+    _DATASET = load_uci_dataset(
+        sample_n=_DATASET_SAMPLE_N,
+        random_state=_DATASET_RANDOM_STATE
+    )
 
     fitness_history = []
     pop_history     = []
