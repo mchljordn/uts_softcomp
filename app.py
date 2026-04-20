@@ -14,7 +14,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Import FIS dari file utama
-from fis_manual import build_fis, build_rules, predict, load_uci_sample, evaluate
+from fis_manual import build_fis, build_rules, predict, load_uci_dataset, evaluate
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 
@@ -133,7 +133,7 @@ with tab2:
 
     axes_flat[5].axis('off')
     axes_flat[5].text(0.5, 0.5,
-        "FIS: Mamdani\nAND: Minimum\nOR: Maximum\nDefuzz: Centroid\nRules: 30",
+        "FIS: Mamdani\nAND: Minimum\nOR: Maximum\nDefuzz: Centroid\nRules: 31",
         ha='center', va='center', fontsize=12,
         bbox=dict(boxstyle='round,pad=0.8', facecolor='#eef2ff', edgecolor='#aab'))
 
@@ -144,18 +144,19 @@ with tab2:
 #  TAB 3 — EVALUASI BATCH
 # ════════════════════════════════════════
 with tab3:
-    st.subheader("Evaluasi Batch — Dataset Simulasi UCI (n=120)")
+    st.subheader("Evaluasi Batch — Dataset UCI #697 (stratified sample)")
 
     if st.button("▶ Jalankan Evaluasi", type="primary"):
-        with st.spinner("Menjalankan inferensi pada 120 sampel..."):
-            dataset = load_uci_sample()
+        with st.spinner("Mengambil dan memproses dataset UCI #697..."):
+            dataset = load_uci_dataset(sample_n=200, random_state=42)
+        with st.spinner("Menjalankan inferensi batch..."):
             result  = evaluate(sim, dataset)
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Akurasi Keseluruhan", f"{result['accuracy']}%")
-        col2.metric("Benar / Total",       f"{result['correct']} / {result['n']}")
-        col3.metric("Akurasi Rendah",      f"{result['per_class']['Rendah']*100:.1f}%")
-        col4.metric("Akurasi Tinggi",      f"{result['per_class']['Tinggi']*100:.1f}%")
+        col2.metric("Macro F1",            f"{result['macro_f1']}%")
+        col3.metric("Sampel Valid",        f"{result['n']}")
+        col4.metric("Skipped (error FIS)", f"{result['skipped']}")
 
         # Confusion matrix
         label_order = ['Rendah', 'Sedang', 'Tinggi']
